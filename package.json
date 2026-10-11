@@ -4,7 +4,8 @@
   "private": true,
   "description": "MSDS 화평법(K-REACH)·산안법(KOSHA) 분석 포털 — Vercel Serverless",
   "scripts": {
-    "dev": "vercel dev"
+    "dev": "vercel dev",
+    "test": "node tests/msds-check.test.js"
   },
   "dependencies": {
     "@vercel/kv": "^2.0.0",

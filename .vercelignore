@@ -1,0 +1,14 @@
+sample-validation/
+sample-validation-2/
+sample-validation-3/
+validation-after/
+validate-samples*.cjs
+verify-regressions.cjs
+tests/
+deployment-source/**
+sample-validation*/**
+validation-after/**
+**/*.txt
+**/*.png
+**/browser-results.json
+**/results.json

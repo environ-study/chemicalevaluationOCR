@@ -82,6 +82,13 @@
               <span>- 각 MSDS 표 하단에 화평법·산안법 최종 판정 요약행 추가</span>
             </div>
 
+            <div><b>ver6.</b> 26.10.11 (OCR)</div>
+            <div style="margin:4px 0 10px 0;display:flex;flex-direction:column;gap:4px;font-size:12px;">
+              <span>- MSDS 업로드(PDF/JPG) 정합성 검사 추가 — 브라우저 내 처리(텍스트 추출 + 한글 OCR)</span>
+              <span>- 제출번호(AA…)·개정일자·3번 구성성분·15번 법적규제 확인</span>
+              <span>- 판독한 구성성분을 직접입력 시트로 보내 바로 분석</span>
+            </div>
+
             <div><b>ver5.</b> 26.07.26</div>
             <div style="margin-top:4px;display:flex;flex-direction:column;gap:4px;font-size:12px;">
               <span>- 백엔드를 Vercel Serverless(Node.js)로 완전 전환, K-REACH·KOSHA 응답 캐시 적용</span>
@@ -140,6 +147,24 @@
   </div>
 
 </div>
+  <!-- MSDS 업로드 정합성 검사 (브라우저 내 처리 — 파일 외부 전송 없음) -->
+  <div class="card">
+    <div class="card-head">📄 MSDS 업로드 정합성 검사</div>
+    <div class="card-body">
+      <label class="msds-drop" id="msdsDrop">
+        <input type="file" id="msdsFileInput" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden>
+        <div class="msds-drop-title">PDF · JPG 파일을 끌어다 놓거나 클릭해서 선택</div>
+        <div class="msds-drop-sub">제출번호(AA…) · 개정일자 · 3번 구성성분 · 15번 법적규제를 확인합니다. 파일은 이 브라우저 안에서만 처리됩니다.</div>
+      </label>
+      <label class="msds-merge-opt">
+        <input type="checkbox" id="msdsMergeImages" checked>
+        이미지(JPG/PNG) 여러 장을 함께 선택하면 파일명 순서대로 한 MSDS의 페이지로 묶어 검사
+      </label>
+      <div class="msds-check-status" id="msdsCheckStatus"></div>
+    </div>
+  </div>
+  <div id="msdsCheckArea"></div>
+
   <!-- 입력 카드 -->
   <div class="card">
     <div class="card-head">
@@ -216,6 +241,10 @@
 <!-- LOC(Word) 확인서 자동 생성용 — 프론트엔드에서 docx 템플릿을 직접 치환 -->
 <script src="https://cdn.jsdelivr.net/npm/pizzip@3/dist/pizzip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3/build/docxtemplater.min.js"></script>
+<!-- MSDS 업로드 정합성 검사 — pdf.js·Tesseract는 /vendor에 자체 호스팅 -->
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="msds-check.js"></script>
 <script src="app.js"></script>
+<script src="msds-check-ui.js"></script>
 </body>
 </html>
