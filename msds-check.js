@@ -185,7 +185,7 @@
 
   /** 줄 하나를 섹션 제목으로 해석 → { no } 또는 null */
   function parseHeading(text) {
-    const c = compact(normalizeSymbols(text)).toLowerCase();
+    const c = compact(normalizeSymbols(text)).toLowerCase().replace(/^[*•·]+/, '');
     if (c.length > 140) return null;
     let no = null;
     let rest = '';
@@ -346,7 +346,7 @@
   const DATE_XXY_RE = /(?<![\d.])(\d{1,2})\s*([.\-/])\s*(\d{1,2})\s*[.\-/]\s*((?:19|20)\d{2})(?!\d)/g;
   const MONTHS = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
   const DATE_MDY_NAME_RE = /\b(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?\s+(\d{1,2})(?:st|nd|rd|th)?,?\s+((?:19|20)\d{2})/gi;
-  const DATE_DMY_NAME_RE = /\b(\d{1,2})(?:st|nd|rd|th)?[\s\-.]+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s\-.,]+((?:19|20)\d{2})/gi;
+  const DATE_DMY_NAME_RE = /\b(\d{1,2})(?:st|nd|rd|th)?[\s\/\-.]+(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)[a-z]*\.?[\s\/\-.,]+((?:19|20)\d{2})/gi;
 
   const REVISION_LABEL_RE = /(최종개정일자|최종개정일|개정일자|개정일|개정년월일|개정날짜|revisiondate|reviseddate|daterevised|rev\.?date|dateofrevision|dateoflastrevision|lastrevised|revisedon|revision:|safetydatasheetdated|sdsdated|versiondate|修订日期|修订日|修改日期|überarbeitetam|überarbeitungsdatum)/i;
   const CREATED_LABEL_RE = /(최초작성일자|최초작성일|작성일자|작성일|발행일자|발행일|issuedate|dateofissue|issuingdate|dateoffirstedition|dateofpreparation|preparationdate|编制日期|填表时间)/i;
@@ -400,7 +400,8 @@
           if (!lm) continue;
           const dates = extractDates(norm);
           const labelCharPos = approxOriginalIndex(norm, lm.index + lm[0].length);
-          const after = dates.filter((d) => d.index >= labelCharPos);
+          const nextLabel = norm.slice(labelCharPos).search(/(?:date\s+of\s+(?:last|first)\s+issue|print(?:ing)?\s+date|date\s+of\s+issue|version)/i);
+          const after = dates.filter((d) => d.index >= labelCharPos && (nextLabel < 0 || d.index < labelCharPos + nextLabel));
           const pick = after[0] || (part === ln.text ? null : dates[0]);
           if (pick) return { ...pick, page: p.pageNo, line: ln.text };
         }
@@ -409,7 +410,9 @@
         for (const k of [1, 2, -1]) {
           const other = p.lines[i + k];
           if (!other) continue;
-          const nd = extractDates(other.text);
+          const labelSeg = (ln.segs || []).find(s => labelRe.test(compact(s.text).toLowerCase()));
+          const aligned = labelSeg && (other.segs || []).find(s => Math.abs(s.x0 - labelSeg.x0) < 0.035);
+          const nd = extractDates(aligned ? aligned.text : other.text);
           if (nd.length) return { ...nd[0], page: p.pageNo, line: ln.text + ' / ' + other.text };
         }
       }
@@ -537,6 +540,7 @@
   function headerType(text) {
     const t = compact(text).toLowerCase();
     if (!t) return null;
+    if (/(registration|등록|목록번호|cellcomponent|chemicalformula|^number$)/.test(t)) return 'other';
     if (/(einecs|elincs|ec(no|번호|#|-no)|^ec$|index)/.test(t)) return 'ec';
     if (/(cas|식별번호|ident)/.test(t)) return 'cas';
     if (/(함유량|함량|농도|content|concentration|conc\.|%|w\/w|wt|weight|qty|quantity|浓度|含量|range)/.test(t)) return 'content';
@@ -552,23 +556,24 @@
    * 인접 줄 조각도 합친다. 반환: { headerIdx, cols:[{type,x0,x1}] } 또는 null
    */
   function detectHeader(lines, firstRowIdx) {
-    for (let i = firstRowIdx - 1; i >= 0 && i >= firstRowIdx - 8; i--) {
+    for (let i = firstRowIdx - 1; i >= 0 && i >= firstRowIdx - 18; i--) {
       const ln = lines[i];
       if (findCas(ln.text).length) continue;
+      if (/\d\s*%|H\d{3}|date:|version:/i.test(ln.text)) continue;
       const typed = ln.segs.map((sg) => ({ type: headerType(sg.text), x0: sg.x0, x1: sg.x1 })).filter((c) => c.type);
       const kinds = new Set(typed.map((c) => c.type));
       if (typed.length < 2 || !(kinds.has('cas') || kinds.has('content'))) continue;
       // 종류를 모르는 머리글 칸(예: "Ally no.", "Note")도 열로 등록 — 그 칸 글자가 물질명에 섞이지 않게
       ln.segs.forEach((sg) => { if (!headerType(sg.text)) typed.push({ type: 'other', x0: sg.x0, x1: sg.x1 }); });
       // 위·아래 인접 머리글 조각 보충
-      [i - 1, i + 1].forEach((j) => {
+      [i - 2, i - 1, i + 1, i + 2].forEach((j) => {
         const nl = lines[j];
         if (!nl || j >= firstRowIdx || findCas(nl.text).length) return;
         nl.segs.forEach((sg) => {
           const type = headerType(sg.text);
           if (!type) return;
           const overlap = typed.find((c) => sg.x0 < c.x1 + 0.02 && sg.x1 > c.x0 - 0.02);
-          if (overlap) { if (overlap.type === 'name' && type === 'content') overlap.type = 'content'; }
+          if (overlap) { if (type === 'cas' || (overlap.type === 'name' && type === 'content')) overlap.type = type; }
           else typed.push({ type, x0: sg.x0, x1: sg.x1 });
         });
       });
@@ -894,9 +899,9 @@
         lines.forEach((ln, i) => {
           if (i <= header.headerIdx || usedLines.has(i) || isNoise(ln) || findCas(ln.text).length) return;
           const cs = ln.segs.find((sg) => columnOf(sg, header) === contentCol);
-          const c = cs && parseContent(cs.text, false);
+          const c = cs && parseContent(cs.text, true);
           const nm = ln.segs.filter((sg) => (columnOf(sg, header) || {}).type === 'name').map((sg) => sg.text).join(' ');
-          if (!c || !nm) return;
+          if (!c || !nm || /note|H\d{3}/i.test(cs.text)) return;
           rows.push({
             cas: '', casValid: false, secret: true, name: cleanName(nm), alias: '', contentRaw: cs.text,
             min: c.min, max: c.max, isLt: c.isLt, page: ln.page, y: ln.y, h: ln.h, lineText: ln.text, extraCas: [], _li: i,
@@ -905,7 +910,118 @@
         rows.sort((a, b) => a._li - b._li);
       }
     }
-    rows.forEach((r) => { delete r._li; });
+    // Recover cells by their actual text-item positions, including wrapped names
+    // that share a line with EC numbers or classifications.
+    if (header) {
+      rows.forEach((r, k) => {
+        const line = lines[r._li];
+        const parts = line.segs;
+        if (r.max == null) {
+          const candidates = parts.filter(s => !findCas(s.text).length && parseContent(s.text, true));
+          const cpart = candidates.find(s => /%/.test(s.text));
+          const c = cpart && parseContent(cpart.text, true);
+          if (c) Object.assign(r, { min: c.min, max: c.max, isLt: c.isLt, contentRaw: cpart.text });
+        }
+        const nc = header.cols.find(c => c.type === 'name');
+        if (!r.name) {
+          const fallbackName = line.segs.find(s => /[A-Za-z가-힣]{3}/.test(s.text) && !findCas(s.text).length && !parseContent(s.text, true) && !/H\d{3}|^(자료없음|N\/A|KE-)/i.test(s.text));
+          if (fallbackName) r.name = cleanName(fallbackName.text);
+        }
+        if (!nc) {
+          const ns = line.segs.find(s => s.text === r.name);
+          const next = lines[r._li + 1];
+          const continuation = ns && next && !findCas(next.text).length && next.segs.find(s => Math.abs(s.x0 - ns.x0) < 0.01 && /^[a-z]{3,}$/i.test(s.text.trim()));
+          if (continuation) r.name = joinWrapped(r.name, continuation.text);
+          return;
+        }
+        let end = k + 1 < rows.length ? rows[k + 1]._li : lines.length;
+        if (end > r._li && lines[end - 1] && /^CASRN\b/i.test(lines[end - 1].text)) end--;
+        const nameParts = [];
+        const start = r._li > 0 && /^CASRN\b/i.test(lines[r._li - 1].text) ? r._li - 1 : r._li;
+        for (let j = start; j < end; j++) {
+          const l = lines[j];
+          if (l.page !== line.page || (j > r._li && /^(for explanation|notes?\b|\d+\s+a substance|※|\*|cas 번호|page\b)/i.test(l.text.trim()))) break;
+          const positioned = l.segs.flatMap(s => s.items ? s.items.map(it => ({ ...it, text: it.str })) : [s]);
+          if (r.max == null && j === start) {
+            const c = parseContent(l.text, true);
+            if (c && /%/.test(l.text)) Object.assign(r, { min: c.min, max: c.max, isLt: c.isLt, contentRaw: c.raw });
+          }
+          positioned.forEach(s => {
+            if (columnOf(s, header) !== nc || findCas(s.text).length || parseContent(s.text, true) || /H\d{3}|^(includes one|electrolyte salt|electrolyte solvents)/i.test(s.text)) return;
+            nameParts.push(s.text);
+          });
+        }
+        if (nameParts.length && (!header.cols.some(c => c.type === 'alias')) && (start < r._li || !r.name || nameParts.join('').includes(r.name.replace(/\s/g, '')) || nameParts[0].startsWith(r.name))) r.name = cleanName(nameParts.reduce(joinWrapped, ''));
+        if (!r.name) {
+          const fallbackName = line.segs.find(s => /[A-Za-z가-힣]{3}/.test(s.text) && !findCas(s.text).length && !parseContent(s.text, true) && !/H\d{3}|^(자료없음|N\/A|KE-)/i.test(s.text));
+          if (fallbackName) r.name = cleanName(fallbackName.text);
+        }
+      });
+    }
+    // CAS-first tables without a recognised header: the name follows CAS in
+    // the same row; hazard classifications on neighbouring lines are not names.
+    if (!header) rows.forEach(r => {
+      const line = lines[r._li];
+      const hit = findCas(line.text)[0];
+      if (!hit || !/^\s*CAS\s*:/i.test(line.text)) return;
+      const tail = line.text.slice(hit.end).replace(/(?:≥|≤|>|<)?\s*\d+(?:[.,]\d+)?\s*(?:-\s*(?:≥|≤|>|<)?\s*\d+(?:[.,]\d+)?)?\s*%.*$/, '').trim();
+      if (tail && !/^(skin|eye|acute|flam|stot|carc)\b/i.test(tail)) {
+        r.name = cleanName(tail);
+        const nameSeg = line.segs.find(s => s.text.includes(tail));
+        const next = lines[r._li + 1];
+        const continuation = nameSeg && next && next.segs.find(s => Math.abs(s.x0 - nameSeg.x0) < 0.015 && !/H\d{3}/.test(s.text));
+        if (continuation) r.name = joinWrapped(r.name, continuation.text);
+      }
+    });
+    // Preserve two concentration bases and mark merged candidate groups.
+    const basisLines = lines.filter(l => /electrolyte.*w\/w|cell.*g\/g/i.test(l.text));
+    if (basisLines.length) {
+      const basis = basisLines.flatMap(l => l.segs).filter(s => /electrolyte|cell/i.test(s.text));
+      rows.forEach(r => {
+        r.concentrations = basis.map(b => {
+          const s = lines[r._li].segs.find(s => Math.abs(s.x0 - b.x0) < 0.04 && parseContent(s.text, false));
+          return s ? { basis: b.text, ...parseContent(s.text, false) } : null;
+        }).filter(Boolean);
+        const cell = r.concentrations.find(c => /cell/i.test(c.basis));
+        if (cell) Object.assign(r, { min: cell.min, max: cell.max, isLt: cell.isLt, contentRaw: r.concentrations.map(c => c.basis + ': ' + c.raw).join(' / ') + ' — 입력값: 셀 기준' });
+      });
+      const groupStart = lines.findIndex(l => /includes one or more of the following/i.test(l.text));
+      if (groupStart >= 0) {
+        const group = rows.filter(r => r._li > groupStart);
+        const shared = group.flatMap(r => r.concentrations);
+        group.forEach(r => Object.assign(r, { groupConcentrations: shared, sharedContent: true, min: null, max: null, contentRaw: '후보 성분군 합계: ' + shared.map(c => c.basis + ' ' + c.raw).join(' / ') }));
+      }
+    }
+    if (header && header.cols.some(c => c.type === 'alias')) {
+      const centred = rows.some(r => {
+        const p = lines[r._li - 1];
+        return p && p.page === r.page && !findCas(p.text).length && p.segs.some(s => (columnOf(s, header) || {}).type === 'name') && r.y - p.y < r.h * 2;
+      });
+      if (centred) {
+        const ni = header.cols.findIndex(c => c.type === 'name');
+        const ai = header.cols.findIndex(c => c.type === 'alias');
+        const cas = header.cols.find(c => c.type === 'cas');
+        const candidates = lines.flatMap(l => l.segs).filter(s => s.x0 > header.cols[ni].x0 + 0.12 && s.x0 < cas.x0 - 0.02 && !findCas(s.text).length && !parseContent(s.text,true) && !/주식회사/.test(s.text));
+        if (ai === ni+1 && candidates.length) header.bounds[ni] = Math.min(...candidates.map(s=>s.x0)) - 0.005;
+        rows.forEach((r,k) => {
+        const prev = rows[k-1], next = rows[k+1];
+        const low = prev && prev.page === r.page ? (prev.y+r.y)/2 : -1;
+        const high = next && next.page === r.page ? (next.y+r.y)/2 : 1;
+        let name='',alias='';
+        lines.forEach((l,i) => {
+          if(i<=header.headerIdx || l.page!==r.page || l.y<low || l.y>=high || l.y>0.96 || PAGE_NO_RE.test(l.text) || /주식회사|^(※|\*|본 제품|cas 번호)/i.test(l.text)) return;
+          l.segs.flatMap(s => s.items ? s.items.map(it=>({...it,text:it.str})) : [s]).forEach(s => {
+            const col=columnOf(s,header);
+            if(!col || !['name','alias'].includes(col.type) || findCas(s.text).length || parseContent(s.text,true)) return;
+            if(col.type==='name') name=joinWrapped(name,s.text); else alias=joinWrapped(alias,s.text);
+          });
+        });
+        if(name) r.name=cleanName(name);
+        if(alias) r.alias=cleanName(alias);
+        });
+      }
+    }
+    rows.forEach((r) => { r.name = r.name.replace(/\s*Includes one or more of the following.*$/i, ''); delete r._li; });
 
     // 페이지가 넘어가며 행이 반복되거나 비고란에 같은 CAS가 다시 나온 경우 중복 제거
     // (같은 CAS면 함유량을 읽은 쪽을 남긴다)
@@ -917,8 +1033,12 @@
     });
 
     const issues = [];
+    const supplementaryIngredients = lines.flatMap(l => findCas(l.text).filter(h => !deduped.some(r => r.cas === h.cas)).map(h => ({cas:h.cas, page:l.page, note:l.text})));
+    supplementaryIngredients.forEach(c => issues.push({level:'warn', msg:`구성성분 비고에 CAS ${c.cas}가 있음 — 개별 함량을 원문에서 확인하세요: ${c.note}`}));
     if (!deduped.length) issues.push({ level: 'error', msg: '구성성분에서 CAS 번호를 읽지 못함' });
     deduped.forEach((r, i) => {
+      if (!r.name) issues.push({ level: 'warn', msg: `${i + 1}행 성분명을 읽지 못함 — 원문 확인 필요` });
+      if (r.sharedContent) issues.push({ level: 'warn', msg: `${i + 1}행은 후보 성분군의 합계 함량 — 개별 함량을 확인한 뒤 직접입력 시트로 보내세요` });
       if (r.cas && !r.casValid) issues.push({ level: 'warn', msg: `${i + 1}행 CAS ${r.cas} 체크디지트 불일치 — 원문 오기 또는 오독` });
       if (r.secret) issues.push({ level: 'info', msg: `${i + 1}행${r.name ? ' (' + r.name + ')' : ''} CAS 미기재 또는 비공개(영업비밀 등)` });
       if (r.max == null) issues.push({ level: 'warn', msg: `${i + 1}행${r.cas ? ' (' + r.cas + ')' : ''} 함유량을 읽지 못함` });
@@ -930,6 +1050,7 @@
 
     return {
       found: !fallback,
+      supplementaryIngredients,
       fallback,
       headerFound: !!header,
       layout: header ? 'table' : 'block',
@@ -973,14 +1094,14 @@
     { law: '위험물안전관리법', kw: ['위험물안전관리법', '위험물관리법'], items: [
       ['위험물', ['제1류', '제2류', '제3류', '제4류', '제5류', '제6류', '인화성액체', '특수인화물', '제1석유류', '제2석유류', '제3석유류', '제4석유류', '알코올류']],
     ] },
-    { law: '폐기물관리법', kw: ['폐기물관리법'], items: [['지정폐기물', ['지정폐기물']]] },
+    { law: '폐기물관리법', kw: ['폐기물관리법'], items: [['지정폐기물', ['지정폐기물']], ['사업장폐기물', ['사업장폐기물']]] },
     { law: '잔류성오염물질 관리법', kw: ['잔류성오염물질관리법', '잔류성오염물질', '잔류성유기오염물질'], items: [] },
     { law: '대기환경보전법', kw: ['대기환경보전법'], items: [] },
     { law: '물환경보전법', kw: ['물환경보전법', '수질및수생태계'], items: [] },
     { law: '토양환경보전법', kw: ['토양환경보전법'], items: [] },
     { law: '고압가스 안전관리법', kw: ['고압가스안전관리법'], items: [] },
     // ── 국외 SDS에서 자주 쓰이는 규제·목록 (해당 여부만 표시) ──
-    { law: '한국 (영문 기재: K-REACH/KECI 등)', foreign: true, kw: ['k-reach', 'kreach', 'keci', 'koreaexisting', 'korea'], items: [] },
+    { law: '한국 (영문 기재: K-REACH/KECI 등)', foreign: true, kw: ['k-reach', 'keci', 'koreaexisting', 'korea'], items: [] },
     { law: '미국 TSCA', foreign: true, kw: ['tsca'], items: [] },
     { law: '미국 SARA/EPCRA', foreign: true, kw: ['sara313', 'sara302', 'sara311', 'sara', 'epcra'], items: [] },
     { law: '미국 CERCLA', foreign: true, kw: ['cercla'], items: [] },
@@ -992,8 +1113,8 @@
     { law: '독일 ChemG/GefStoffV', foreign: true, kw: ['chemikaliengesetz', 'gefstoffv', 'chemg'], items: [] },
     { law: '캐나다 DSL/WHMIS', foreign: true, kw: ['whmis', 'cepa', 'dsl'], items: [] },
     { law: '호주 AICS/AIIC', foreign: true, kw: ['aics', 'aiic'], items: [] },
-    { law: '일본 ENCS/안위법', foreign: true, kw: ['encs', 'japan'], items: [] },
-    { law: '중국 IECSC/위험화학품', foreign: true, kw: ['iecsc', '危险化学品', 'china'], items: [] },
+    { law: '일본 ENCS/안위법', foreign: true, kw: ['encs', 'japan', 'industrialsafetyandhealthlaw', 'pollutantreleaseandtransferregister', 'ordinanceonpreventionofhazards'], items: [] },
+    { law: '중국 IECSC/위험화학품', foreign: true, kw: ['iecsc', '危险化学品', 'china', 'gb30000', 'catalogueofhazardouschemicals', 'catalogueofhighlytoxicchemicals'], items: [] },
     { law: '기타 국가 목록(필리핀·대만·뉴질랜드)', foreign: true, kw: ['piccs', 'tcsi', 'nzioc', 'newzealand'], items: [] },
     { law: '국제협약(로테르담·스톡홀름·몬트리올)', foreign: true, kw: ['로테르담', '스톡홀름', '몬트리올', 'rotterdam', 'stockholm', 'montreal'], items: [] },
   ];
@@ -1094,6 +1215,7 @@
       const lower = compact(norm).toLowerCase();
       if (named) {
         const k = compact(named).toLowerCase();
+        if (/^(혼합물|제품|mixture|product)$/.test(k)) return null;
         if (exactKeys.has(k)) return { cas: exactKeys.get(k), name: named.trim() };
         const nk = nameKeys.find((n) => k.includes(n.key) || n.key.includes(k));
         if (nk) return { cas: nk.cas, name: named.trim() };
@@ -1203,7 +1325,7 @@
           if (lineComp) {
             addHit(law, f.item, tailNeg || st === 'negative' ? 'negative' : 'positive', lineComp, ln);
           } else if (st) {
-            addHit(law, f.item, st, null, ln);                       // C. 제품 단위
+            addHit(law, f.item, st, carryOver ? compCtx : null, ln);
           } else if (colonPos >= 0 && f.start > colonPos) {
             addHit(law, f.item, tailNeg ? 'negative' : 'positive', compCtx, ln); // A. "…규제 : 기존화학물질"
           } else if (carryOver && compCtx && !isHeading) {
@@ -1232,7 +1354,8 @@
           if (status) addHit(itemCtx.law, itemCtx.item, status, lineComp, ln);
         } else if (lawCtx) {
           // 영문 양식: "Copper(regulated) … Nickel(regulated)" — 성분마다 괄호 안 상태를 따로 본다
-          const label = headingText && LAW_KEYWORDS.some((k) => compact(headingText).toLowerCase().includes(k.kw)) ? headingText : '해당';
+          const explicitItem = /EPCRA\s*(302|304|313)/i.exec(norm);
+          const label = explicitItem ? 'EPCRA ' + explicitItem[1] : headingText && LAW_KEYWORDS.some((k) => compact(headingText).toLowerCase().includes(k.kw)) ? headingText : '해당';
           const perComp = [];
           nameKeys.forEach((n) => {
             const at = lower.indexOf(n.key + '(');
@@ -1252,6 +1375,68 @@
       }
     });
 
+    // Read unmerged source lines as well: a heading, a substance list and a
+    // following standalone negative value must retain their own context.
+    let supplementalLaw = null;
+    let supplementalItem = null;
+    const raw15 = allLines.slice(range[0], range[1]);
+    const originalLawsWithHits = new Set(hits.map(h => h.law));
+    const appendEvidence = (law, item, status, cas, ln) => {
+      if (!law || !item || hits.some(h => h.law === law && h.item === item && h.status === status && h.cas === cas)) return;
+      addHit(law, item, status, cas ? { cas, name: '' } : null, ln);
+    };
+    raw15.forEach((ln, i) => {
+      const lower = compact(normalizeSymbols(ln.text)).toLowerCase();
+      if (PAGE_NO_RE.test(ln.text) || /productname:|제품명:|revisiondate:/.test(lower)) return;
+      if (/^occupational illnesses|^according to|^printing date|^version|^trade name/i.test(ln.text.trim())) { supplementalItem = null; return; }
+      let definition = LAW_DEFS.find(d => d.kw.some(k => lower.includes(compact(k).toLowerCase())));
+      const next = raw15[i + 1];
+      const nextDefinition = next && LAW_DEFS.find(d => d.kw.some(k => compact(next.text).toLowerCase().includes(compact(k).toLowerCase())));
+      const useNextLabel = !definition && nextDefinition && /management information/i.test(ln.text);
+      if (useNextLabel) definition = nextDefinition;
+      if (/harmonised classification|annex vi of regulation/i.test(ln.text)) definition = LAW_DEFS.find(d => d.law === 'EU CLP');
+      if (definition) {
+        supplementalLaw = definition.law;
+        supplementalItem = definition.foreign ? ((useNextLabel ? next.text : ln.text).trim().replace(/^[-*•·]\s*/, '')) : '해당 여부';
+        mention(supplementalLaw);
+      }
+      if (!supplementalLaw) return;
+      const foreign = LAW_DEFS.find(d => d.law === supplementalLaw).foreign;
+      if (foreign && /this product is controlled under/i.test(ln.text) && supplementalItem) appendEvidence(supplementalLaw, supplementalItem, 'positive', '', ln);
+      if (foreign && /^P5[a-c]$/i.test(ln.text.trim()) && supplementalLaw === 'EU Seveso') appendEvidence(supplementalLaw, ln.text.trim(), 'positive', '', ln);
+      if (foreign && /^category|^qualifying quantity|^annex|^other eu|^national regulations/i.test(ln.text.trim()) && !definition) supplementalItem = null;
+      if (!foreign && originalLawsWithHits.has(supplementalLaw)) return;
+      const items = findItems(lower).filter(f => f.law === supplementalLaw);
+      if (!foreign && items.length) supplementalItem = items[0].item;
+      if (foreign && /section\s*(302|304|313)|(?:listed substances|substances.*listed under|controlled class|to be notified)/i.test(ln.text)) supplementalItem = ln.text.trim();
+      const negative = /해당없음|not\s+(?:regulated|listed|applicable)|no\s+substances|none\s+of\s+the\s+ingredients/i.test(ln.text);
+      if (negative && supplementalItem) {
+        appendEvidence(supplementalLaw, supplementalItem, 'negative', '', ln);
+        if (foreign) supplementalItem = null;
+        return;
+      }
+      if (!foreign && supplementalItem && /^\s*사업장폐기물\s*$/.test(ln.text)) appendEvidence(supplementalLaw, supplementalItem, 'positive', '', ln);
+      if (!foreign) return;
+      const matches = components.filter(c => c.cas && (findCas(ln.text).some(h => h.cas === c.cas) || [c.name, ...String(c.alias || '').split(';')].some(n => {
+        const key = compact(n).toLowerCase();
+        return key.length >= 4 && lower.includes(key);
+      }) || (/일본/.test(supplementalLaw) && /molybdenum|zirconium|cobalt|nickel|chromium/i.test(ln.text) && new RegExp('^' + ln.text.trim().split(/\s/)[0], 'i').test(c.name))));
+      if (matches.length && supplementalItem && !/not\s+(?:regulated|applicable)|no substances|none of/i.test(supplementalItem)) {
+        const evidence = /listed|regulated|carcinogen|\bkg\b|H\d{3}|catalogue|prtr|notified|controlled/i.test(ln.text + ' ' + supplementalItem);
+        if (evidence) matches.forEach(c => appendEvidence(supplementalLaw, supplementalItem, 'positive', c.cas, ln));
+      }
+      // Classification/CERCLA values may precede their printed law label.
+      if (definition && foreign && i > 0 && /cercla|clp/i.test(ln.text)) {
+        const prior = raw15[i - 1];
+        const context = prior.text + ' ' + ln.text;
+        components.filter(c => c.name && compact(context).toLowerCase().includes(compact(c.name).toLowerCase())).forEach(c => {
+          if (/\bkg\b|H\d{3}|carc\.|stot/i.test(context)) appendEvidence(supplementalLaw, ln.text.trim(), 'positive', c.cas, { ...ln, text: context });
+        });
+      }
+    });
+
+    // A law mention alone is insufficient to declare the regulation parsed.
+    const unresolvedLaws = Array.from(lawMentions.keys()).filter(law => !hits.some(h => h.law === law));
     // 법령별 요약
     const laws = [];
     LAW_DEFS.forEach((d) => {
@@ -1271,6 +1456,7 @@
     const unmatchedCas = Array.from(casIn15).filter((c) => casChecksumOk(c) && !compCas.has(c));
 
     const issues = [];
+    unresolvedLaws.forEach(law => issues.push({ level: 'warn', msg: `${law}: 법령명만 확인됨 — 해당 여부와 성분 연결을 원문에서 확인하세요` }));
     if (!laws.length) issues.push({ level: 'warn', msg: '15번 항목에서 법령명을 찾지 못함 — 원문 확인 필요' });
     unmatchedCas.forEach((c) => issues.push({ level: 'warn', msg: `15번에 기재된 CAS ${c}가 3번 구성성분 표에 없음` }));
     Array.from(unmatchedNames).forEach((n) => issues.push({ level: 'warn', msg: `15번에 기재된 성분 "${n}"을(를) 3번 구성성분에서 찾지 못함` }));
@@ -1303,17 +1489,20 @@
         // 같은 줄의 다른 칸(예: "SDS 编号…  产品名称：…")도 확인
         const parts = [lines[i].text].concat((lines[i].segs || []).map((sg) => sg.text));
         for (const part of parts) {
-          const m = PRODUCT_LABEL_RE.exec(normalizeSymbols(part).trim());
+          const m = PRODUCT_LABEL_RE.exec(normalizeSymbols(part).trim().replace(/^\d+(?:\.\d+)*\.\s*/, ''));
           if (!m) continue;
           const v = m[2].replace(/^[:：\s]+/, '').trim();
-          if (v && !/^(used|on|of)\b/i.test(v)) return v.replace(/^[-•·]\s*/, '');
+          if (v && !/^(used|on|of|substance\s*\/\s*mixture)\b/i.test(v)) return v.replace(/^[-•·]\s*/, '').replace(/^称\s*[:：]/, '');
           const next = lines[i + 1] && lines[i + 1].text.trim();
-          if (next && !PRODUCT_LABEL_RE.test(next) && next.length <= 80) return next.replace(/^[-•·]\s*/, '');
+          if (!v && next && !/identification|^\d[.)]|substance\s*\/\s*mixture/i.test(next) && !PRODUCT_LABEL_RE.test(next) && next.length <= 80) return next.replace(/^[-•·]\s*/, '');
         }
       }
       return '';
     };
-    return scan(allLines.slice(range[0], range[1])) || scan(allLines.slice(0, Math.min(allLines.length, 40)));
+    const primary = scan(allLines.slice(range[0], range[1])) || scan(allLines.slice(0, Math.min(allLines.length, 40)));
+    if (primary) return primary;
+    const chemical = allLines.slice(range[0], range[1]).find(l => /^chemical name\s+\S/i.test(l.text));
+    return chemical ? chemical.text.replace(/^chemical name\s+/i, '').trim() : '';
   }
 
   /* ═══════════════════════════════════════════════════════════

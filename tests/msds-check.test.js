@@ -33,6 +33,29 @@ t('날짜 형식', () => {
   assert.deepStrictEqual(d('Revision Date 15.01.2025'), ['2025-01-15']);
   assert.deepStrictEqual(d('Revision Date: Jan 1st, 2025'), ['2025-01-01']);
   assert.deepStrictEqual(d('修订日期：2017/6/1'), ['2017-06-01']);
+  assert.deepStrictEqual(d('Revision date: 1/Jul/2025'), ['2025-07-01']);
+});
+
+t('개정일과 이전 발행일의 열 구분', () => {
+  const pages = [{pageNo:1, lines:[
+    {text:'Revision Date: Date of last issue: 11.06.2024', segs:[{text:'Revision Date:',x0:0.2,x1:0.3},{text:'Date of last issue: 11.06.2024',x0:0.4,x1:0.8}]},
+    {text:'02.12.2024', segs:[{text:'02.12.2024',x0:0.2,x1:0.3}]}
+  ]}];
+  assert.strictEqual(M.checkRevisionDate(pages).value, '2024-12-02');
+});
+
+t('별표 섹션 제목', () => {
+  assert.deepStrictEqual(M.findSections([{text:'* SECTION 3: Composition/information on ingredients'},{text:'* SECTION 15: Regulatory information'}]), {3:0,15:1});
+});
+
+t('영문 규제의 긍정/부정과 성분 연결', () => {
+  const texts=['15. Regulatory information','EPCRA 302 Regulation','Not regulated','EPCRA 313 Regulation','Copper(regulated)','California Proposition 65','Nickel Listed as carcinogen','16. Other information'];
+  const lines=texts.map(text=>({text,page:1,segs:[{text,x0:0.1,x1:0.9}]}));
+  const r=M.parseRegulations(lines,M.findSections(lines),[{cas:'7440-50-8',name:'Copper'},{cas:'7440-02-0',name:'Nickel'}]);
+  assert.ok(r.hits.some(h=>h.status==='negative' && /302/.test(h.item)));
+  assert.ok(r.hits.some(h=>h.status==='positive' && h.cas==='7440-50-8' && /313/.test(h.item)));
+  assert.ok(!r.hits.some(h=>h.status==='positive' && /302/.test(h.item)));
+  assert.ok(r.hits.some(h=>h.status==='positive' && h.cas==='7440-02-0' && /Prop 65/.test(h.law)));
 });
 
 t('섹션 제목(국문/영문/중문)', () => {

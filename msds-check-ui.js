@@ -184,7 +184,7 @@ function renderMcComposition(res, idx) {
       <td class="mc-center"><input type="checkbox" id="mc-${idx}-${i}-lt" ${r.isLt ? 'checked' : ''} title="체크 = 미만(최대값 미포함)"></td>
       <td class="mc-raw-cell" title="${escAttr(r.lineText)}">${escHtml(r.contentRaw || '')}</td>
       <td>${regs || '<span class="law-note">-</span>'}</td>
-      <td class="mc-center"><input type="checkbox" id="mc-${idx}-${i}-use" ${r.cas ? 'checked' : ''} title="시트로 보낼 행"></td>
+      <td class="mc-center"><input type="checkbox" id="mc-${idx}-${i}-use" ${r.cas && !r.sharedContent ? 'checked' : ''} title="시트로 보낼 행 — 후보군 합계는 개별 함량 확인 필요"></td>
     </tr>`;
   }).join('');
   return `<div class="mc-sub-title">3번 구성성분 (판독값 — 수정 후 시트로 보낼 수 있음)</div>
@@ -231,6 +231,7 @@ function sendMsdsCheckToSheet(idx) {
     const minRaw = (document.getElementById(`mc-${idx}-${i}-min`) || {}).value;
     const maxRaw = (document.getElementById(`mc-${idx}-${i}-max`) || {}).value;
     const lt = !!(document.getElementById(`mc-${idx}-${i}-lt`) || {}).checked;
+    if (r.sharedContent && (maxRaw === '' || maxRaw == null)) { alert('후보 성분군 합계는 개별 함유량이 아닙니다. 선택한 행의 개별 함유량을 입력하세요.'); return; }
     rows.push({
       cas: cas.trim(),
       min: minRaw !== '' && minRaw != null ? parseFloat(minRaw) : null,
