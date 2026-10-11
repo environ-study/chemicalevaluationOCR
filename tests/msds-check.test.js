@@ -51,4 +51,29 @@ t('제출번호 — 첫/마지막 페이지', () => {
   assert.strictEqual(M.checkSubmissionNo([page(1, ['제품명 : 테스트'])]).status, 'error');
 });
 
+t('15번 소제목형(KCC 양식) — 성분별 해당됨/해당없음', () => {
+  const lines = [
+    '15. 법적 규제현황', '가. 산업안전보건법에 의한 규제', '○ 작업환경측정물질',
+    '- 해당됨 (1% 이상 함유한 자일렌)', '- 해당없음 (1% 이상 함유한 에틸벤젠)',
+    '- [2-Propenoic acid polymer with butyl] : 해당', '없음',
+    '○ PSM대상물질 - 제품:해당됨(인화성액체)', '- [자일렌] : 해당됨 (인화성 액체)',
+    '나. 화학물질관리법에 의한 규제', '○ 사고대비물질', '- 해당없음 (85% 이상 함유한 자일렌)',
+    '다. 화학물질의 등록 및 평가 등에 관한 법률', '* 중점관리물질', '- [자일렌] : STOT',
+    '16. 그 밖의 참고사항',
+  ].map((text) => ({ text, page: 1, segs: [{ text, x0: 0.1, x1: 0.9 }] }));
+  const comps = [
+    { cas: '1330-20-7', name: '자일렌', alias: '자일롤 ; 다이메틸벤젠' },
+    { cas: '100-41-4', name: '에틸벤젠', alias: '' },
+    { cas: '27306-39-4', name: '2-Propenoic acid polymer with butyl', alias: '' },
+  ];
+  const r = M.parseRegulations(lines, M.findSections(lines), comps);
+  const pos = (cas) => r.hits.filter((h) => h.cas === cas && h.status === 'positive').map((h) => h.item).sort();
+  assert.deepStrictEqual(pos('1330-20-7'), ['공정안전보고서(PSM) 대상', '작업환경측정대상물질', '중점관리물질']);
+  assert.deepStrictEqual(pos('100-41-4'), []);
+  assert.deepStrictEqual(pos('27306-39-4'), []); // 줄바꿈된 "해당 / 없음"
+  assert.ok(r.hits.some((h) => h.cas === '' && h.item === '공정안전보고서(PSM) 대상'));
+  assert.ok(!r.hits.some((h) => h.item === '위험물')); // 괄호 속 "인화성 액체"는 항목이 아님
+  assert.strictEqual(r.unmatchedNames.length, 0);
+});
+
 console.log(`\n${n} passed`);

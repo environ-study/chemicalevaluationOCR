@@ -121,12 +121,13 @@
           text += (needSpace ? ' ' : '') + s;
         }
         if (!seg || gap > fontW * 1.1) {
-          seg = { text: s, x0: it.x0, x1: it.x1 };
+          seg = { text: s, x0: it.x0, x1: it.x1, items: [{ str: s, x0: it.x0, x1: it.x1 }] };
           segs.push(seg);
         } else {
           const needSpace = gap > fontW * 0.18 && !/\s$/.test(seg.text) && !/^\s/.test(s);
           seg.text += (needSpace ? ' ' : '') + s;
           seg.x1 = Math.max(seg.x1, it.x1);
+          seg.items.push({ str: s, x0: it.x0, x1: it.x1 });
         }
         prev = it;
       });
@@ -577,14 +578,54 @@
 
   /** 데이터 조각이 속한 열 — 머리글 중심과 가장 가까운 열(가운데/왼쪽 정렬 모두 고려) */
   function columnOf(sg, header) {
-    let best = null;
-    header.cols.forEach((c) => {
-      const inside = sg.x0 >= c.x0 - 0.015 && sg.x0 <= c.x1;
-      const d = Math.min(Math.abs(center(sg) - center(c)), Math.abs(sg.x0 - c.x0)) - (inside ? 0.05 : 0);
-      if (!best || d < best.d) best = { c, d };
-    });
-    return best ? best.c : null;
+    // 열 경계 = 인접 머리글 중심의 중간(단, 다음 머리글 시작보다 오른쪽일 수 없음).
+    // 표 셀은 대부분 왼쪽 정렬이므로 조각의 시작(x0)으로 열을 정한다.
+    const cols = header.cols;
+    if (!header.bounds) {
+      header.bounds = cols.slice(0, -1).map((c, i) => Math.min((center(c) + center(cols[i + 1])) / 2, cols[i + 1].x0));
+    }
+    const x = sg.x0 + 0.002;
+    let i = 0;
+    while (i < header.bounds.length && x >= header.bounds[i]) i++;
+    return cols[i] || null;
   }
+
+  /**
+   * 머리글이 넓은 칸 가운데에 있으면 머리글 위치만으로는 '물질명|관용명' 경계를 잘못 잡는다.
+   * 데이터 줄에서 CAS 열 왼쪽에 조각이 2개인 경우, 두 번째 조각의 시작 위치(가장 흔한 값)를
+   * 관용명 열의 시작으로 보고 경계를 보정한다.
+   */
+  function refineNameAliasBound(header, lines) {
+    const cols = header.cols;
+    const ai = cols.findIndex((c) => c.type === 'alias');
+    const ni = cols.findIndex((c) => c.type === 'name');
+    const casC = cols.find((c) => c.type === 'cas');
+    if (ai < 1 || ni !== ai - 1 || !casC) return;
+    columnOf({ x0: 0 }, header); // bounds 초기화
+    const casStart = header.bounds[ai] != null ? header.bounds[ai] : casC.x0;
+    const votes = new Map();
+    lines.forEach((ln, i) => {
+      if (i <= header.headerIdx) return;
+      const left = ln.segs.filter((sg) => sg.x1 <= casStart + 0.01);
+      if (left.length !== 2) return;
+      const k = Math.round(left[1].x0 * 100);
+      votes.set(k, (votes.get(k) || 0) + 1);
+    });
+    let best = null;
+    votes.forEach((v, k) => { if (!best || v > best.v) best = { k, v }; });
+    if (best && best.v >= 2) header.bounds[ni] = best.k / 100 - 0.01;
+  }
+
+  /** 줄바꿈된 셀 텍스트 이어붙이기 — 한글끼리는 단어 중간 줄바꿈이 많아 붙여 쓴다 */
+  function joinWrapped(a, b) {
+    if (!a) return b || '';
+    if (!b) return a;
+    if (/[가-힣]$/.test(a) && /^[가-힣]/.test(b)) return a + b;
+    if (/[-([/]$/.test(a) || /^[)\],;]/.test(b)) return a + b;
+    return a + ' ' + b;
+  }
+
+  const PAGE_NO_RE = /^\s*(page\s*)?\d+\s*(\/|of)\s*\d+\s*$/i;
 
   const CAS_LABEL_RE = /\b(cas\s*(no|number|n°|#|rn)?\.?\s*[:：]?|cas-no\.?\s*[:：]?)/gi;
   const NAME_LABEL_RE = /^(substance\s*name|chemical\s*name|product\s*name|component|ingredient|name|물질명|화학물질명|성분명|화학명|品名|名称)\s*[:：]\s*(.+)$/i;
@@ -617,6 +658,7 @@
       if (findCas(ln.text).length) rowIdx.push(i);
     });
     const header = rowIdx.length ? detectHeader(lines, rowIdx[0]) : null;
+    if (header) refineNameAliasBound(header, lines);
     const casCol = header && header.cols.find((c) => c.type === 'cas');
     if (header && casCol) {
       lines.forEach((ln, i) => {
@@ -656,9 +698,14 @@
           if (sg === casSeg) return;
           const col = columnOf(sg, header);
           const type = col ? col.type : null;
-          if (type === 'content') contentParts.push({ text: sg.text, labeled: true, x0: col.x0 });
-          else if (type === 'alias') alias += (alias ? ' ' : '') + sg.text;
-          else if (type === 'name') name += (name ? ' ' : '') + sg.text;
+          if (type === 'name' || type === 'alias') {
+            // 이름·관용명 칸이 좁게 붙어 한 조각으로 합쳐진 경우가 있어 원래 글자 단위(item)로 다시 나눈다
+            (sg.items || [sg]).forEach((it) => {
+              const t = (columnOf(it, header) || col).type === 'alias' ? 'alias' : 'name';
+              if (t === 'alias') alias += (alias ? ' ' : '') + it.str;
+              else name += (name ? ' ' : '') + it.str;
+            });
+          } else if (type === 'content') contentParts.push({ text: sg.text, labeled: true, x0: col.x0 });
           else if (type !== 'ec' && type !== 'class' && type !== 'cas') contentParts.push({ text: sg.text, labeled: false });
         });
         if (!name) name = nameFromCasSeg();
@@ -730,33 +777,79 @@
       };
     });
 
-    // 4) 표 배치에서 줄바꿈된 물질명(CAS 없는 줄, CAS 열 왼쪽 이름 열에만 글자) → 가장 가까운 행에 이어붙임
+    // 4) 표 배치에서 여러 줄로 나뉜 물질명·관용명 처리
     if (rows.length && header && casCol) {
-      const avgH = rows.reduce((s, r) => s + r.h, 0) / rows.length;
       const nameCols = header.cols.filter((c) => c.type === 'name' || c.type === 'alias');
-      lines.forEach((ln, i) => {
-        if (i <= header.headerIdx || rowIdx.includes(i)) return;
-        if (!ln.segs.length || !ln.segs.every((sg) => { const c = columnOf(sg, header); return c && nameCols.includes(c); })) return;
-        let best = null;
+      const nameCol = header.cols.find((c) => c.type === 'name');
+      const aliasCol = header.cols.find((c) => c.type === 'alias');
+      const itemsOf = (ln) => ln.segs.flatMap((sg) => sg.items || [sg]);
+      const colTypes = (ln) => new Set(itemsOf(ln).map((it) => (columnOf(it, header) || {}).type));
+      const isNoise = (ln) => PAGE_NO_RE.test(ln.text) || /^[*※]/.test(ln.text.trim());
+      const nameOnly = (ln) => {
+        const its = itemsOf(ln);
+        return its.length && its.every((it) => it.x1 <= casCol.x0 + 0.01 && nameCols.includes(columnOf(it, header)));
+      };
+      const rowByLine = new Map(rows.map((r) => [r._li, r]));
+
+      // 셀 세로 정렬 판별: CAS 줄에 물질명 첫 글자가 같이 있으면 '위쪽 정렬', 아니면 '가운데 정렬'
+      const topAligned = !nameCol || rows.filter((r) => colTypes(lines[r._li]).has('name')).length * 2 >= rows.length;
+
+      if (!topAligned && aliasCol) {
+        // 가운데 정렬: 물질명·관용명 칸이 동시에 시작하는 줄을 행의 시작으로 보고,
+        // 다음 행 시작 전까지를 한 행(블록)으로 묶는다
+        const starts = [];
+        lines.forEach((ln, i) => {
+          if (i <= header.headerIdx || isNoise(ln)) return;
+          const t = colTypes(ln);
+          if (t.has('name') && t.has('alias')) starts.push(i);
+        });
+        const lastRowLi = rows[rows.length - 1]._li;
         rows.forEach((r) => {
-          if (r.page !== ln.page) return;
-          const dy = Math.abs(r.y - ln.y);
-          if (dy <= avgH * 2.6 && (!best || dy < best.dy)) best = { r, dy };
+          const start = starts.filter((s) => s <= r._li).pop();
+          if (start == null) return;
+          const next = starts.find((s) => s > r._li);
+          let end = next != null ? next : lastRowLi + 1;
+          // 마지막 블록: CAS 줄 뒤 이름 칸만 있는 줄까지만
+          if (next == null) { while (lines[end] && !isNoise(lines[end]) && nameOnly(lines[end])) end++; }
+          let name = '', alias = '';
+          for (let i = start; i < end; i++) {
+            const ln = lines[i];
+            if (isNoise(ln) || (i !== r._li && rowByLine.has(i))) continue;
+            itemsOf(ln).forEach((it) => {
+              const c = columnOf(it, header);
+              if (!c || it.x1 > casCol.x0 + 0.01) return;
+              if (c.type === 'alias') alias = joinWrapped(alias, it.str);
+              else if (c.type === 'name') name = joinWrapped(name, it.str);
+            });
+            // 함유량이 CAS 줄이 아닌 줄에 있는 경우 보충
+            if (r.max == null && i !== r._li) {
+              const cs = ln.segs.find((sg) => (columnOf(sg, header) || {}).type === 'content');
+              const c = cs && parseContent(cs.text, false);
+              if (c) Object.assign(r, { min: c.min, max: c.max, isLt: c.isLt, contentRaw: cs.text });
+            }
+          }
+          r.name = cleanName(name);
+          r.alias = cleanName(alias);
         });
-        if (!best) return;
-        ln.segs.forEach((sg) => {
-          const c = columnOf(sg, header);
-          const key = c.type === 'alias' ? 'aliasParts' : 'nameParts';
-          const base = c.type === 'alias' ? best.r.alias : best.r.name;
-          best.r[key] = best.r[key] || [{ y: best.r.y, text: base }];
-          best.r[key].push({ y: ln.y, text: sg.text });
+      } else {
+        // 위쪽 정렬: CAS 줄 아래로 이어지는 이름·관용명 줄을 바로 위 행에 이어붙임
+        let cur = null;
+        let lastLn = null;
+        lines.forEach((ln, i) => {
+          if (i <= header.headerIdx) return;
+          if (rowByLine.has(i)) { cur = rowByLine.get(i); lastLn = ln; return; }
+          if (!cur || !lastLn) return;
+          const ok = !isNoise(ln) && nameOnly(ln) && ln.page === lastLn.page &&
+            Math.abs(ln.y - lastLn.y) <= Math.max(ln.h, lastLn.h) * 2.2;
+          if (!ok) { if (!PAGE_NO_RE.test(ln.text)) cur = null; return; }
+          itemsOf(ln).forEach((it) => {
+            if (columnOf(it, header).type === 'alias') cur.alias = joinWrapped(cur.alias, it.str);
+            else cur.name = joinWrapped(cur.name, it.str);
+          });
+          lastLn = ln;
         });
-      });
-      rows.forEach((r) => {
-        if (r.nameParts) r.name = cleanName(r.nameParts.sort((a, b) => a.y - b.y).map((p) => p.text).filter(Boolean).join(' '));
-        if (r.aliasParts) r.alias = cleanName(r.aliasParts.sort((a, b) => a.y - b.y).map((p) => p.text).filter(Boolean).join(' '));
-        delete r.nameParts; delete r.aliasParts;
-      });
+        rows.forEach((r) => { r.name = cleanName(r.name); r.alias = cleanName(r.alias); });
+      }
     }
     rows.forEach((r) => { delete r._li; });
 
@@ -799,7 +892,7 @@
       ['작업환경측정대상물질', ['작업환경측정']],
       ['특수건강진단대상물질', ['특수건강진단', '특수건강검진']],
       ['관리대상유해물질', ['관리대상유해물질']],
-      ['특별관리물질', ['특별관리물질']],
+      ['특별관리물질', ['특별관리대상물질', '특별관리물질']],
       ['노출기준설정물질', ['노출기준설정', '노출기준']],
       ['허용기준설정물질', ['허용기준설정', '허용기준']],
       ['제조등금지물질', ['제조등금지', '제조등의금지', '제조·사용금지']],
@@ -877,79 +970,86 @@
     return str.slice(0, start) + ' '.repeat(len) + str.slice(start + len);
   }
 
+  // 줄 단위 해당 여부 — 부정 표현을 먼저 본다("notlisted"가 "listed"로 잡히지 않도록)
+  const NEG_ANY_RE = /(해당없음|해당사항없음|해당안됨|해당되지않|비해당|미해당|notapplicable|notregulated|notlisted|notsubjectto)/;
+  const POS_ANY_RE = /(해당됨|해당함|해당$|[:：]해당|해당\(|적용대상|\blisted\b|\bregulated\b|\byes\b)/;
+  // 소제목(○ 항목명, * 항목명, 가. …) — 이 아래 줄들이 성분별 해당 여부를 나열하는 양식
+  const HEADING_MARK_RE = /^\s*([○●◦◎■□▪◆◇*※]|[가-하]\.|\(?\d{1,2}\)|[A-Za-z]\))/;
+
+  function lineStatus(lower) {
+    if (NEG_ANY_RE.test(lower)) return 'negative';
+    if (POS_ANY_RE.test(lower)) return 'positive';
+    return null;
+  }
+
+  /**
+   * 15번 법적 규제현황 — 세 가지 기재 방식을 모두 처리한다.
+   *  A. 한 줄형   : "톨루엔(108-88-3) : 작업환경측정대상물질, 특수건강진단대상물질"
+   *  B. 소제목형 : "○ 작업환경측정물질" 다음 줄에 "- [자일렌] : 해당됨", "- 해당없음 (… 에틸벤젠)"
+   *                (KCC 등 국내 MSDS 작성 프로그램의 일반적인 양식)
+   *  C. 제품 단위 : "- 위험물에 해당됨 : 제4류 …", "PSM대상물질 - 제품:해당됨"
+   */
   function parseRegulations(allLines, sections, components) {
     const range = sectionRange(sections, 15, allLines.length);
     if (!range) {
-      return { found: false, laws: [], hits: [], unmatchedCas: [], issues: [{ level: 'warn', msg: '15번 법적 규제현황 항목을 찾지 못함' }] };
+      return { found: false, laws: [], hits: [], unmatchedCas: [], unmatchedNames: [], issues: [{ level: 'warn', msg: '15번 법적 규제현황 항목을 찾지 못함' }] };
     }
-    const lines = allLines.slice(range[0], range[1]);
+    // 긴 물질명 때문에 "- [성분명] : 해당" / "없음"처럼 줄이 나뉜 경우를 한 줄로 합친다
+    // (글머리 기호 없이 시작하고, 직전 '-' 줄과 들여쓰기가 같거나 깊은 줄 = 이어지는 줄)
+    const lines = [];
+    allLines.slice(range[0], range[1]).forEach((ln) => {
+      if (PAGE_NO_RE.test(ln.text)) return;
+      const prev = lines[lines.length - 1];
+      const x0 = ln.segs && ln.segs.length ? ln.segs[0].x0 : 0;
+      if (prev && /^\s*[-•·]/.test(prev.text) && !HEADING_MARK_RE.test(ln.text) && !/^\s*[-•·]/.test(ln.text) &&
+          x0 >= prev.x0 - 0.005 && !LAW_KEYWORDS.some((k) => compact(ln.text).toLowerCase().includes(k.kw))) {
+        prev.text = joinWrapped(prev.text, ln.text.trim());
+        return;
+      }
+      lines.push({ text: ln.text, page: ln.page, x0 });
+    });
     const compByCas = new Map((components || []).filter((c) => c.cas).map((c) => [c.cas, c]));
 
-    // 3번 표의 물질명·관용명을 성분 식별 키로 사용 (짧은 일반어는 오탐 방지 위해 제외)
-    const nameKeys = [];
+    // 3번 표의 물질명·관용명(; 로 구분된 각 이명)을 성분 식별 키로 사용
+    const exactKeys = new Map(); // compact 이름 → cas
+    const nameKeys = [];         // 부분일치용(물질명만, 짧은 일반어 제외)
     (components || []).forEach((c) => {
       if (!c.cas) return;
-      [c.name, c.alias].forEach((nm) => {
+      const names = [c.name].concat(String(c.alias || '').split(/[;,]/));
+      names.forEach((nm, idx) => {
         const k = compact(nm).toLowerCase();
-        if (!k || k === '-') return;
+        if (!k || k === '-' || k === '자료없음') return;
+        if (!exactKeys.has(k)) exactKeys.set(k, c.cas);
         const hangul = /[가-힣]/.test(k);
-        if ((hangul && k.length >= 2) || (!hangul && k.length >= 4)) nameKeys.push({ cas: c.cas, key: k });
+        if (idx === 0 && ((hangul && k.length >= 2) || (!hangul && k.length >= 4))) nameKeys.push({ cas: c.cas, key: k });
       });
     });
     nameKeys.sort((a, b) => b.key.length - a.key.length);
 
+    /** 줄에서 언급된 성분 → { cas, name } (못 찾으면 cas '') 또는 null(성분 언급 없음) */
     const compOfLine = (ln) => {
-      const cHits = findCas(ln.text);
-      if (cHits.length) return cHits[0].cas;
-      const lower = compact(ln.text).toLowerCase();
+      const norm = normalizeSymbols(ln.text);
+      const cHits = findCas(norm);
+      if (cHits.length) return { cas: cHits[0].cas, name: '' };
+      let named = null;
+      let loose = false; // "해당됨 (인화성 액체)"처럼 괄호 안이 성분이 아닐 수도 있는 형식
+      let m;
+      if ((m = /^\s*[-•·]?\s*\[(.+)\]\s*[:：]?/.exec(norm))) named = m[1];
+      else if ((m = /함유한\s*([^)]+)\)/.exec(norm))) named = m[1];
+      else if ((m = /(?:해당됨|해당없음|해당함)\s*\(([^)]+)\)/.exec(norm))) { named = m[1]; loose = true; }
+      const lower = compact(norm).toLowerCase();
+      if (named) {
+        const k = compact(named).toLowerCase();
+        if (exactKeys.has(k)) return { cas: exactKeys.get(k), name: named.trim() };
+        const nk = nameKeys.find((n) => k.includes(n.key) || n.key.includes(k));
+        if (nk) return { cas: nk.cas, name: named.trim() };
+        return loose ? null : { cas: '', name: named.trim() };
+      }
       const nk = nameKeys.find((n) => lower.includes(n.key));
-      return nk ? nk.cas : '';
-    };
-    const lineHasItem = (ln) => {
-      const lower = compact(normalizeSymbols(ln.text)).toLowerCase();
-      return ITEM_KEYWORDS.some((k) => lower.includes(k.kw));
+      return nk ? { cas: nk.cas, name: '' } : null;
     };
 
-    // 기재 방식 판별
-    //  - 한 줄형: "톨루엔(108-88-3) : 작업환경측정대상물질…" → 성분은 그 줄에만 적용
-    //  - 블록형: "톨루엔(108-88-3)" 다음 줄들에 규제 나열 → 다음 성분이 나올 때까지 유지
-    let inlineCount = 0, blockCount = 0;
-    lines.forEach((ln) => {
-      if (!compOfLine(ln)) return;
-      if (lineHasItem(ln)) inlineCount++; else blockCount++;
-    });
-    const carryOver = blockCount > inlineCount;
-
-    const hits = [];
-    const lawMentions = new Map(); // law -> { negative:boolean, positive:boolean, lines:[] }
-    let lawCtx = null;
-    let compCtx = '';
-    const casIn15 = new Set();
-
-    lines.forEach((ln, li) => {
-      const lower = compact(normalizeSymbols(ln.text)).toLowerCase();
-      findCas(ln.text).forEach((h) => casIn15.add(h.cas));
-
-      const lineComp = compOfLine(ln);
-      if (carryOver) { if (lineComp) compCtx = lineComp; }
-      else compCtx = lineComp;
-
-      // 법령 언급
-      let work = lower;
-      LAW_KEYWORDS.forEach(({ law, kw }) => {
-        const idx = work.indexOf(kw);
-        if (idx < 0) return;
-        lawCtx = law;
-        work = maskRange(work, idx, kw.length);
-        const after = lower.slice(idx + kw.length)
-          .replace(/^(관리법|법률|법)?(에의한|에따른|에의거한|상|의)?(규제|규제현황|규제정보)?/, '');
-        const entry = lawMentions.get(law) || { negative: false, positive: false, lines: [] };
-        if (NEGATIVE_RE.test(after)) entry.negative = true;
-        entry.lines.push(ln.text);
-        lawMentions.set(law, entry);
-      });
-
-      // 규제항목
+    const findItems = (work) => {
       const found = [];
       ITEM_KEYWORDS.forEach(({ law, item, kw }) => {
         let idx = work.indexOf(kw);
@@ -959,29 +1059,129 @@
           idx = work.indexOf(kw);
         }
       });
-      found.sort((a, b) => a.start - b.start);
-      found.forEach((f, k) => {
-        const nextStart = k + 1 < found.length ? found[k + 1].start : lower.length;
-        let tail = lower.slice(f.end, nextStart).replace(/^(물질|대상|대상물질|유해물질|설정물질)+/, '');
-        if (!tail.replace(/[:\-·•\s]/g, '') && lines[li + 1]) {
-          tail = compact(lines[li + 1].text).toLowerCase(); // 표 형식: 다음 줄에 해당/해당없음
-        }
-        const negative = NEGATIVE_RE.test(tail);
-        let law = f.law;
-        const aliases = ITEM_LAW_ALIASES[f.item];
-        if (aliases && lawCtx && aliases.includes(lawCtx)) law = lawCtx;
-        hits.push({
-          law,
-          item: f.item,
-          status: negative ? 'negative' : 'positive',
-          cas: compCtx || '',
-          line: ln.text,
-          page: ln.page,
-        });
-        const entry = lawMentions.get(law) || { negative: false, positive: false, lines: [] };
-        if (!negative) entry.positive = true;
-        lawMentions.set(law, entry);
+      return found.sort((a, b) => a.start - b.start);
+    };
+    const lawFor = (f, lawCtx) => {
+      const aliases = ITEM_LAW_ALIASES[f.item];
+      return aliases && lawCtx && aliases.includes(lawCtx) ? lawCtx : f.law;
+    };
+
+    // 한 줄형 vs 블록형(성분 줄 다음에 규제 나열) 판별 — 블록형이면 성분 문맥을 다음 줄로 이어간다
+    let inlineCount = 0, blockCount = 0;
+    lines.forEach((ln) => {
+      const c = compOfLine(ln);
+      if (!c) return;
+      const lower = compact(normalizeSymbols(ln.text)).toLowerCase();
+      if (ITEM_KEYWORDS.some((k) => lower.includes(k.kw))) inlineCount++;
+      else if (!lineStatus(lower)) blockCount++;
+    });
+    const carryOver = blockCount > inlineCount;
+
+    const hits = [];
+    const lawMentions = new Map(); // law -> { negative, positive }
+    const unmatchedNames = new Set();
+    const casIn15 = new Set();
+    let lawCtx = null;
+    let itemCtx = null;   // 소제목형: 현재 규제항목 {law,item}
+    let headingText = ''; // 규제항목이 아닌 소제목(예: "EPCRA 313 규정")
+    let compCtx = null;   // 블록형: 직전 성분
+
+    const mention = (law) => {
+      if (!lawMentions.has(law)) lawMentions.set(law, { negative: false, positive: false });
+      return lawMentions.get(law);
+    };
+    const addHit = (law, item, status, comp, ln) => {
+      if (comp && comp.name && !comp.cas) { unmatchedNames.add(comp.name); return; }
+      hits.push({ law, item, status, cas: comp ? comp.cas : '', line: ln.text, page: ln.page });
+      if (status === 'positive') mention(law).positive = true;
+    };
+
+    lines.forEach((ln, li) => {
+      const norm = normalizeSymbols(ln.text);
+      const lower = compact(norm).toLowerCase();
+      findCas(norm).forEach((h) => casIn15.add(h.cas));
+      const isHeading = HEADING_MARK_RE.test(norm);
+      const st = lineStatus(lower);
+
+      // 법령명
+      let work = lower;
+      let lawLine = false;
+      LAW_KEYWORDS.forEach(({ law, kw }) => {
+        const idx = work.indexOf(kw);
+        if (idx < 0) return;
+        lawCtx = law;
+        lawLine = true;
+        work = maskRange(work, idx, kw.length);
+        const after = lower.slice(idx + kw.length)
+          .replace(/^(관리법|법률|법)?(에의한|에따른|에의거한|상|의)?(규제|규제현황|규제정보)?/, '');
+        mention(law);
+        if (NEGATIVE_RE.test(after)) mention(law).negative = true;
       });
+      if (lawLine || isHeading) { itemCtx = null; compCtx = null; }
+
+      const lineComp = compOfLine(ln);
+      // 소제목형: "- [톨루엔] : 해당됨 (인화성 액체)" — 괄호 안 설명의 낱말(인화성액체 등)을
+      // 새 규제항목으로 오인하지 않도록 소제목 항목으로 처리한다
+      if (itemCtx && lineComp && st && /^\s*[-•·]/.test(norm)) {
+        addHit(itemCtx.law, itemCtx.item, st, lineComp, ln);
+        return;
+      }
+      let items = findItems(work);
+      if (!lineComp && items.length > 1) {
+        // "○ PSM대상물질 - 제품:해당됨(인화성액체)" — '해당' 뒤 괄호 설명 속 낱말은 항목이 아님
+        const statusPos = lower.search(/해당/);
+        const beforeStatus = items.filter((f) => statusPos >= 0 && f.start < statusPos);
+        if (beforeStatus.length) items = beforeStatus;
+      }
+      if (lineComp && carryOver && !items.length) compCtx = lineComp;
+
+      if (items.length) {
+        const colonPos = lower.search(/[:：]/);
+        items.forEach((f, k) => {
+          const law = lawFor(f, lawCtx);
+          const nextStart = k + 1 < items.length ? items[k + 1].start : lower.length;
+          let tail = lower.slice(f.end, nextStart).replace(/^(물질|대상|대상물질|유해물질|설정물질|화학물질)+/, '');
+          if (!tail.replace(/[:\-·•\s]/g, '') && lines[li + 1] && !HEADING_MARK_RE.test(lines[li + 1].text)) {
+            const nxt = compact(lines[li + 1].text).toLowerCase(); // 표 형식: 다음 줄에 해당/해당없음
+            if (NEGATIVE_RE.test(nxt)) tail = nxt;
+          }
+          const tailNeg = NEGATIVE_RE.test(tail);
+          if (lineComp) {
+            addHit(law, f.item, tailNeg || st === 'negative' ? 'negative' : 'positive', lineComp, ln);
+          } else if (st) {
+            addHit(law, f.item, st, null, ln);                       // C. 제품 단위
+          } else if (colonPos >= 0 && f.start > colonPos) {
+            addHit(law, f.item, tailNeg ? 'negative' : 'positive', compCtx, ln); // A. "…규제 : 기존화학물질"
+          } else if (carryOver && compCtx && !isHeading) {
+            addHit(law, f.item, tailNeg ? 'negative' : 'positive', compCtx, ln);
+          }
+        });
+        // 성분이 없는 항목 줄은 아래 성분 줄들의 소제목이 된다
+        if (!lineComp) {
+          const head = items[0];
+          itemCtx = { law: lawFor(head, lawCtx), item: head.item };
+          headingText = '';
+        }
+        return;
+      }
+
+      if (isHeading && !lineComp) {
+        headingText = norm.replace(HEADING_MARK_RE, '').replace(/[:：].*$/, '').trim();
+        return;
+      }
+
+      if (lineComp) {
+        if (itemCtx) {
+          // B. "- [자일렌] : 해당됨" / "- [자일렌] : STOT"(값 기재) / "- 해당없음 (… 에틸벤젠)"
+          const valueAfterColon = (/[:：]\s*(.+)$/.exec(norm) || [])[1];
+          const status = st || (valueAfterColon && valueAfterColon.trim() ? 'positive' : null);
+          if (status) addHit(itemCtx.law, itemCtx.item, status, lineComp, ln);
+        } else if (lawCtx && st === 'positive' && headingText) {
+          addHit(lawCtx, headingText, 'positive', lineComp, ln); // 예: EPCRA 313 규정 — [자일렌] : 해당됨
+        } else if (lawCtx && st === 'negative') {
+          mention(lawCtx).negative = true;
+        }
+      }
     });
 
     // 법령별 요약
@@ -996,7 +1196,7 @@
       let status = 'mentioned';
       if (positiveItems.length) status = 'regulated';
       else if ((m && m.negative) || negativeItems.length) status = 'not_applicable';
-      laws.push({ law: d.law, status, positiveItems, negativeItems });
+      laws.push({ law: d.law, foreign: !!d.foreign, status, positiveItems, negativeItems });
     });
 
     const compCas = new Set(compByCas.keys());
@@ -1005,8 +1205,9 @@
     const issues = [];
     if (!laws.length) issues.push({ level: 'warn', msg: '15번 항목에서 법령명을 찾지 못함 — 원문 확인 필요' });
     unmatchedCas.forEach((c) => issues.push({ level: 'warn', msg: `15번에 기재된 CAS ${c}가 3번 구성성분 표에 없음` }));
+    Array.from(unmatchedNames).forEach((n) => issues.push({ level: 'warn', msg: `15번에 기재된 성분 "${n}"을(를) 3번 구성성분에서 찾지 못함` }));
 
-    return { found: true, laws, hits, unmatchedCas, issues };
+    return { found: true, laws, hits, unmatchedCas, unmatchedNames: Array.from(unmatchedNames), issues };
   }
 
   /** 15번 규제 hit를 성분(CAS)별로 묶어 3번 표의 보조정보로 사용 */
@@ -1037,9 +1238,9 @@
           const m = PRODUCT_LABEL_RE.exec(normalizeSymbols(part).trim());
           if (!m) continue;
           const v = m[2].replace(/^[:：\s]+/, '').trim();
-          if (v && !/^(used|on|of)\b/i.test(v)) return v;
+          if (v && !/^(used|on|of)\b/i.test(v)) return v.replace(/^[-•·]\s*/, '');
           const next = lines[i + 1] && lines[i + 1].text.trim();
-          if (next && !PRODUCT_LABEL_RE.test(next) && next.length <= 80) return next;
+          if (next && !PRODUCT_LABEL_RE.test(next) && next.length <= 80) return next.replace(/^[-•·]\s*/, '');
         }
       }
       return '';
