@@ -9,6 +9,7 @@ t('CAS 체크디지트', () => {
   assert.ok(M.casChecksumOk('108-88-3'));
   assert.ok(M.casChecksumOk('7732-18-5'));
   assert.ok(!M.casChecksumOk('6777-74-7')); // 실제 샘플의 원문 오기(정답 67774-74-7)
+  assert.deepStrictEqual(M.findCas('Index: 604-010-00-1  CAS: 108-46-3').map((c) => c.cas), ['108-46-3']); // EU Index 뒷부분은 CAS 아님
 });
 
 t('함유량 형식', () => {

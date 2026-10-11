@@ -45,7 +45,7 @@
      2. CAS 번호
      ═══════════════════════════════════════════════════════════ */
   // OCR이 하이픈 주변에 공백을 넣는 경우까지 허용
-  const CAS_RE = /(^|[^\d])(\d{2,7})\s*-\s*(\d{2})\s*-\s*(\d)(?!\d)/g;
+  const CAS_RE = /(^|[^\d-])(\d{2,7})\s*-\s*(\d{2})\s*-\s*(\d)(?!\d)/g;
 
   function casChecksumOk(cas) {
     const m = /^(\d{2,7})-(\d{2})-(\d)$/.exec(cas);
@@ -558,6 +558,8 @@
       const typed = ln.segs.map((sg) => ({ type: headerType(sg.text), x0: sg.x0, x1: sg.x1 })).filter((c) => c.type);
       const kinds = new Set(typed.map((c) => c.type));
       if (typed.length < 2 || !(kinds.has('cas') || kinds.has('content'))) continue;
+      // 종류를 모르는 머리글 칸(예: "Ally no.", "Note")도 열로 등록 — 그 칸 글자가 물질명에 섞이지 않게
+      ln.segs.forEach((sg) => { if (!headerType(sg.text)) typed.push({ type: 'other', x0: sg.x0, x1: sg.x1 }); });
       // 위·아래 인접 머리글 조각 보충
       [i - 1, i + 1].forEach((j) => {
         const nl = lines[j];
@@ -790,6 +792,7 @@
         return its.length && its.every((it) => it.x1 <= casCol.x0 + 0.01 && nameCols.includes(columnOf(it, header)));
       };
       const rowByLine = new Map(rows.map((r) => [r._li, r]));
+      const usedLines = new Set(rows.map((r) => r._li));
 
       // 셀 세로 정렬 판별: CAS 줄에 물질명 첫 글자가 같이 있으면 '위쪽 정렬', 아니면 '가운데 정렬'
       const topAligned = !nameCol || rows.filter((r) => colTypes(lines[r._li]).has('name')).length * 2 >= rows.length;
@@ -803,6 +806,11 @@
           const t = colTypes(ln);
           if (t.has('name') && t.has('alias')) starts.push(i);
         });
+        // 물질명·관용명이 둘 다 여러 줄이면 '시작 줄'이 연달아 잡힌다 — CAS 행이 없는 블록은 뒤 블록과 합침
+        for (let k = 0; k + 1 < starts.length;) {
+          const hasRow = rows.some((r) => r._li >= starts[k] && r._li < starts[k + 1]);
+          if (!hasRow) starts.splice(k + 1, 1); else k++;
+        }
         const lastRowLi = rows[rows.length - 1]._li;
         rows.forEach((r) => {
           const start = starts.filter((s) => s <= r._li).pop();
@@ -815,6 +823,7 @@
           for (let i = start; i < end; i++) {
             const ln = lines[i];
             if (isNoise(ln) || (i !== r._li && rowByLine.has(i))) continue;
+            usedLines.add(i);
             itemsOf(ln).forEach((it) => {
               const c = columnOf(it, header);
               if (!c || it.x1 > casCol.x0 + 0.01) return;
@@ -846,9 +855,54 @@
             if (columnOf(it, header).type === 'alias') cur.alias = joinWrapped(cur.alias, it.str);
             else cur.name = joinWrapped(cur.name, it.str);
           });
+          usedLines.add(i);
           lastLn = ln;
         });
         rows.forEach((r) => { r.name = cleanName(r.name); r.alias = cleanName(r.alias); });
+      }
+
+      // d) 한 셀 안에 식별번호가 여러 줄(Index/CAS/EC…)로 적혀 CAS 줄에 물질명·함유량이 없는 경우
+      //    → 앞뒤 행 사이의 가까운 줄에서 보충
+      const contentCol = header.cols.find((c) => c.type === 'content');
+      const ID_LABEL_RE = /^(index|ec|cas|einecs|registration|reach|등록번호|식별번호)\b/i;
+      rows.forEach((r, k) => {
+        if (r.name && r.max != null) return;
+        const lo = k > 0 ? rows[k - 1]._li : header.headerIdx;
+        const hi = k + 1 < rows.length ? rows[k + 1]._li : lines.length;
+        const near = [];
+        for (let d = 1; d <= 4; d++) [r._li - d, r._li + d].forEach((i) => { if (i > lo && i < hi && lines[i]) near.push(i); });
+        for (const i of near) {
+          const ln = lines[i];
+          if (isNoise(ln) || findCas(ln.text).length) continue;
+          if (r.max == null && contentCol) {
+            const cs = ln.segs.find((sg) => columnOf(sg, header) === contentCol);
+            const c = cs && parseContent(cs.text, false);
+            if (c) { Object.assign(r, { min: c.min, max: c.max, isLt: c.isLt, contentRaw: cs.text }); usedLines.add(i); }
+          }
+          if (!r.name) {
+            const ns = ln.segs.find((sg) => sg.x1 <= (contentCol ? contentCol.x0 : casCol.x0) + 0.01 &&
+              !ID_LABEL_RE.test(sg.text.trim()) && /[A-Za-z가-힣]{3,}/.test(sg.text) && !parseContent(sg.text, true) &&
+              !/^\d{2,}-/.test(sg.text.trim()));
+            if (ns) { r.name = cleanName(ns.text); usedLines.add(i); }
+          }
+          if (r.name && r.max != null) break;
+        }
+      });
+
+      // e) CAS 칸이 비어 있지만 물질명·함유량이 있는 행(예: "Additive  >=0.1 ~ <=1") → CAS 미기재 성분
+      if (contentCol) {
+        lines.forEach((ln, i) => {
+          if (i <= header.headerIdx || usedLines.has(i) || isNoise(ln) || findCas(ln.text).length) return;
+          const cs = ln.segs.find((sg) => columnOf(sg, header) === contentCol);
+          const c = cs && parseContent(cs.text, false);
+          const nm = ln.segs.filter((sg) => (columnOf(sg, header) || {}).type === 'name').map((sg) => sg.text).join(' ');
+          if (!c || !nm) return;
+          rows.push({
+            cas: '', casValid: false, secret: true, name: cleanName(nm), alias: '', contentRaw: cs.text,
+            min: c.min, max: c.max, isLt: c.isLt, page: ln.page, y: ln.y, h: ln.h, lineText: ln.text, extraCas: [], _li: i,
+          });
+        });
+        rows.sort((a, b) => a._li - b._li);
       }
     }
     rows.forEach((r) => { delete r._li; });
@@ -866,7 +920,7 @@
     if (!deduped.length) issues.push({ level: 'error', msg: '구성성분에서 CAS 번호를 읽지 못함' });
     deduped.forEach((r, i) => {
       if (r.cas && !r.casValid) issues.push({ level: 'warn', msg: `${i + 1}행 CAS ${r.cas} 체크디지트 불일치 — 원문 오기 또는 오독` });
-      if (r.secret) issues.push({ level: 'info', msg: `${i + 1}행 CAS 비공개(영업비밀 등)` });
+      if (r.secret) issues.push({ level: 'info', msg: `${i + 1}행${r.name ? ' (' + r.name + ')' : ''} CAS 미기재 또는 비공개(영업비밀 등)` });
       if (r.max == null) issues.push({ level: 'warn', msg: `${i + 1}행${r.cas ? ' (' + r.cas + ')' : ''} 함유량을 읽지 못함` });
       if (r.max != null && r.max > 100) issues.push({ level: 'warn', msg: `${i + 1}행 함유량 ${r.max}%가 100% 초과` });
       if (r.extraCas.length) issues.push({ level: 'warn', msg: `${i + 1}행에 CAS가 여러 개 — 행 분리 확인 필요` });
@@ -1002,7 +1056,7 @@
       const prev = lines[lines.length - 1];
       const x0 = ln.segs && ln.segs.length ? ln.segs[0].x0 : 0;
       if (prev && /^\s*[-•·]/.test(prev.text) && !HEADING_MARK_RE.test(ln.text) && !/^\s*[-•·]/.test(ln.text) &&
-          x0 >= prev.x0 - 0.005 && !LAW_KEYWORDS.some((k) => compact(ln.text).toLowerCase().includes(k.kw))) {
+          x0 >= prev.x0 - 0.005) {
         prev.text = joinWrapped(prev.text, ln.text.trim());
         return;
       }
@@ -1176,10 +1230,24 @@
           const valueAfterColon = (/[:：]\s*(.+)$/.exec(norm) || [])[1];
           const status = st || (valueAfterColon && valueAfterColon.trim() ? 'positive' : null);
           if (status) addHit(itemCtx.law, itemCtx.item, status, lineComp, ln);
-        } else if (lawCtx && st === 'positive' && headingText) {
-          addHit(lawCtx, headingText, 'positive', lineComp, ln); // 예: EPCRA 313 규정 — [자일렌] : 해당됨
-        } else if (lawCtx && st === 'negative') {
-          mention(lawCtx).negative = true;
+        } else if (lawCtx) {
+          // 영문 양식: "Copper(regulated) … Nickel(regulated)" — 성분마다 괄호 안 상태를 따로 본다
+          const label = headingText && LAW_KEYWORDS.some((k) => compact(headingText).toLowerCase().includes(k.kw)) ? headingText : '해당';
+          const perComp = [];
+          nameKeys.forEach((n) => {
+            const at = lower.indexOf(n.key + '(');
+            if (at < 0 || perComp.some((p) => p.cas === n.cas)) return;
+            const close = lower.indexOf(')', at);
+            const pst = lineStatus(lower.slice(at + n.key.length + 1, close < 0 ? undefined : close));
+            if (pst) perComp.push({ cas: n.cas, st: pst });
+          });
+          if (perComp.length) {
+            perComp.forEach((p) => { if (p.st === 'positive') addHit(lawCtx, label, 'positive', { cas: p.cas, name: '' }, ln); });
+          } else if (st === 'positive' && headingText) {
+            addHit(lawCtx, headingText, 'positive', lineComp, ln); // 예: EPCRA 313 규정 — [자일렌] : 해당됨
+          } else if (st === 'negative') {
+            mention(lawCtx).negative = true;
+          }
         }
       }
     });
