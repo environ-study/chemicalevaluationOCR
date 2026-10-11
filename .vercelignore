@@ -5,4 +5,10 @@ validation-after/
 validate-samples*.cjs
 verify-regressions.cjs
 tests/
-*.docx
+deployment-source/**
+sample-validation*/**
+validation-after/**
+**/*.txt
+**/*.png
+**/browser-results.json
+**/results.json
