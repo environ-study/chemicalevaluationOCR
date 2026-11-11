@@ -2,6 +2,9 @@
   "functions": {
     "api/*.js": {
       "maxDuration": 20
+    },
+    "api/kreach-batch.js": {
+      "maxDuration": 60
     }
   }
 }

@@ -1,15 +1,15 @@
 /* ============================================================
    api/kreach.js — 화평법 K-REACH 조회 서버리스 함수
    ─────────────────────────────────────────────────────────
-   GET /api/kreach?cas=108-88-3&contentMax=20&isLt=false
+   GET /api/kreach?cas=108-88-3&contentMax=20&isLt=false[&view=summary]
+   (여러 CAS를 한 번에 조회하려면 POST /api/kreach-batch 사용)
 
    - 원문(raw)만 Vercel KV에 캐시(성공 시에만, TTL 24h)
    - 함량 판정(matchedByContent)은 매 요청마다 무캐시로 재계산
    - API 키는 process.env.API_KEY로만 참조, 응답에 절대 포함하지 않음
    ============================================================ */
 
-const { fetchKreachRaw, applyContentJudgment } = require('./_lib/kreach-parse');
-const { getCachedSuccess, setCachedSuccess } = require('./_lib/kv-cache');
+const { getKreachResult, toSummary } = require('./_lib/kreach-service');
 const { classifyUpstreamFailure, statusForErrorCode } = require('./_lib/http');
 const { normalizeCas } = require('./_lib/normalize');
 
@@ -56,19 +56,11 @@ module.exports = async function handler(req, res) {
   const contentMax = Number.isFinite(parsedContentMax) ? parsedContentMax : null;
   const isLt = isLtRaw === 'true' || isLtRaw === '1';
 
-  // v2: 상세 팝업 sources 보존 및 기존/등록대상기존 분류 수정.
-  // 이전 스키마의 성공 캐시에는 sources가 없어 비고가 빈 것으로 보이므로
-  // 키 버전을 올려 배포 직후 새 원문을 받아 자가치유한다.
-  const cacheKey = `kreach_raw:v2:${cas}`;
+  const summary = firstValue(req.query.view) === 'summary';
 
   try {
-    let raw = await getCachedSuccess(cacheKey);
-    if (!raw) {
-      raw = await fetchKreachRaw(cas, apiKey);
-      await setCachedSuccess(cacheKey, raw);
-    }
-    const final = applyContentJudgment(raw, contentMax, isLt);
-    res.status(200).json(final);
+    const final = await getKreachResult(cas, contentMax, isLt, apiKey);
+    res.status(200).json(summary ? toSummary(final) : final);
   } catch (err) {
     const payload = classifyUpstreamFailure(err, err && err.upstreamRes);
     console.error(`[api/kreach] cas=${cas} errorCode=${payload.errorCode}`);
