@@ -1017,6 +1017,15 @@ function buildKrCell(kr, sheetIdx, compIdx) {
     tags.push(krTagButton(sheetIdx, compIdx, 'reg', idx, regSticker(r), krTagClass(r.type), r.sources));
   });
 
+  // 규제 지정정보는 함량 판정과 별개로 항상 공개한다.
+  // 기준 미달/판정 미확인 정보는 해당 스티커와 구분해 원래 인덱스로 상세조회한다.
+  (kr.regulations || []).forEach((r, idx) => {
+    if (r.matchedByContent) return;
+    const state = r.matchedByContent === false ? '입력 함량 기준 비해당' : '함량 판정 미확인';
+    const label = [r.type, r.hazardCategory, r.criterion, state].filter(Boolean).join(' · ');
+    tags.push(krTagButton(sheetIdx, compIdx, 'reg', idx, label, 'tag-gray', r.sources));
+  });
+
   if (kr.existingChemical && kr.existingChemical.matched) {
     tags.push(krTagButton(sheetIdx, compIdx, 'existing', null, '기존', 'tag-gray', kr.existingChemical.sources));
   }
@@ -1529,11 +1538,11 @@ function buildLocComps(comps) {
     // 한글명·CAS 번호 등은 영문명 대체값으로 넣지 않는다.
     const name = (kr.chemicalNameEn || '').trim();
 
-    // LOC의 유해성 체크(V)는 사내 허가목록 일치 여부와 무관하게 항상
-    // 원래 K-REACH/KOSHA 조회 결과(raw)를 그대로 사용한다(comp.verdict 미참조).
-    const isToxic = (kr.regulations || []).some((r) => r.type === '유독물질' && r.matchedByContent);
-    const hasHazardCat = (cat) => (kr.regulations || []).some((r) => r.hazardCategory === cat && r.matchedByContent);
-    const hasType = (type) => (kr.regulations || []).some((r) => r.type === type && r.matchedByContent);
+    // LOC의 V는 물질의 규제 지정 분류를 공개하는 표시다.
+    // 함량 기준 해당 여부나 사내 허가/구매 판정을 의미하지 않는다.
+    const isToxic = (kr.regulations || []).some((r) => r.type === '유독물질');
+    const hasHazardCat = (cat) => (kr.regulations || []).some((r) => r.hazardCategory === cat);
+    const hasType = (type) => (kr.regulations || []).some((r) => r.type === type);
 
     return {
       name,
