@@ -858,6 +858,17 @@ code {
 }
 
 /* ── 판정(구매가능/사내허가/검토필요/구매불가) 배지 ─────── */
+@media (max-width: 640px) {
+  .api-help-box {
+    width: auto;
+  }
+
+  .api-help-card:hover .api-help-box,
+  .api-help-card:focus-within .api-help-box {
+    transform: none;
+  }
+}
+
 .td-verdict { text-align: center; }
 .verdict-badge {
   display: inline-block;
