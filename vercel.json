@@ -1,5 +1,8 @@
 {
   "functions": {
+    "api/v1/evaluations.js": {
+      "maxDuration": 300
+    },
     "api/*.js": {
       "maxDuration": 20
     }
