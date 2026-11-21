@@ -12,6 +12,7 @@ const { fetchKreachRaw, applyContentJudgment } = require('./_lib/kreach-parse');
 const { getCachedSuccess, setCachedSuccess } = require('./_lib/kv-cache');
 const { classifyUpstreamFailure, statusForErrorCode } = require('./_lib/http');
 const { normalizeCas } = require('./_lib/normalize');
+const { casAlias, enrichKreach } = require('./_lib/regulation');
 
 function firstValue(v) {
   return Array.isArray(v) ? v[0] : v;
@@ -59,15 +60,21 @@ module.exports = async function handler(req, res) {
   // v2: 상세 팝업 sources 보존 및 기존/등록대상기존 분류 수정.
   // 이전 스키마의 성공 캐시에는 sources가 없어 비고가 빈 것으로 보이므로
   // 키 버전을 올려 배포 직후 새 원문을 받아 자가치유한다.
-  const cacheKey = `kreach_raw:v2:${cas}`;
+  // v3: 묶음 CAS 재조회 도입 — 이전에 미등록으로 캐시된 결과를 갱신한다.
+  const cacheKey = `kreach_raw:v3:${cas}`;
 
   try {
     let raw = await getCachedSuccess(cacheKey);
     if (!raw) {
       raw = await fetchKreachRaw(cas, apiKey);
+      // K-REACH는 CAS가 묶여 등록된 물질(예: "105827-78-9, 138261-41-3")을 단일 CAS로는
+      // 찾지 못한다 → 규제 DB의 묶음 문자열로 한 번 더 조회한다.
+      const alias = raw && raw.notFound ? casAlias(cas) : null;
+      if (alias) raw = { ...(await fetchKreachRaw(alias, apiKey)), casNo: cas, searchedAs: alias };
       await setCachedSuccess(cacheKey, raw);
     }
-    const final = applyContentJudgment(raw, contentMax, isLt);
+    // 고시 기준 보완(API 미반영분) + 함량 판정 + 유예기한
+    const final = enrichKreach(raw, cas, contentMax, isLt, applyContentJudgment);
     res.status(200).json(final);
   } catch (err) {
     const payload = classifyUpstreamFailure(err, err && err.upstreamRes);

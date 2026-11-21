@@ -22,6 +22,24 @@
     </div>
 
     <div class="hero-help-row">
+      <div class="hero-help-card api-help-card">
+        <button type="button" class="hero-help-trigger" aria-describedby="apiHelp">🔗 API 사용법</button>
+        <div class="hero-help-box white-theme api-help-box" id="apiHelp" role="tooltip">
+          <strong>API 간단 사용법</strong>
+          <div class="hero-help-body">
+            <p>사이트 주소 뒤에 아래 경로를 붙여 GET 요청을 보내면 JSON 결과를 받습니다.</p>
+            <b>K-REACH · 함량별 규제 조회</b>
+            <code class="api-help-example">/api/kreach?cas=96-29-7&amp;contentMax=25&amp;isLt=false</code>
+            <p><code>cas</code>: CAS번호 · <code>contentMax</code>: 최대함량(25% → 25)<br>
+              <code>isLt</code>: 이하(≤)는 false, 미만(&lt;)은 true</p>
+            <b>KOSHA · 산안법 조회</b>
+            <code class="api-help-example">/api/kosha?cas=96-29-7</code>
+            <p>응답의 <code>success</code>로 조회 성공 여부를 확인하고, <code>regulations</code>에서 규제 목록을 읽습니다. K-REACH의 <code>matchedByContent</code>가 true이면 입력 함량에서 해당합니다.</p>
+            <p><b>엑셀 연동:</b> CAS번호·최대함량을 표(Ctrl+T)로 만든 뒤 Power Query에서 각 행의 값을 위 매개변수로 보내세요. 데이터 → 모두 새로 고침으로 재조회합니다.</p>
+            <p>최종 구매 판정에는 KOSHA와 사내 허가목록 확인도 필요합니다.</p>
+          </div>
+        </div>
+      </div>
       <div class="hero-help-card">
         <button type="button" class="hero-help-trigger">💡 사용 방법</button>
         <div class="hero-help-box">
@@ -91,6 +109,20 @@
               <span>- LOC(화평법·산안법 확인서) Word 문서 자동 생성·다운로드 기능 추가</span>
             </div>
 
+            <div><b>ver6.</b> 26.10.11 (OCR)</div>
+            <div style="margin:4px 0 10px 0;display:flex;flex-direction:column;gap:4px;font-size:12px;">
+              <span>- MSDS 업로드(PDF/JPG) 정합성 검사 추가 — 브라우저 내 처리(텍스트 추출 + 한글 OCR)</span>
+              <span>- 제출번호(AA…)·개정일자·3번 구성성분·15번 법적규제 확인</span>
+              <span>- 판독한 구성성분을 직접입력 시트로 보내 바로 분석</span>
+            </div>
+
+            <div><b>ver7.</b> 26.11.21</div>
+            <div style="margin-top:4px;display:flex;flex-direction:column;gap:4px;font-size:12px;">
+              <span>- 상단 도움말에 API 사용법 툴팁 추가 (마우스 올림·키보드 포커스)</span>
+              <span>- K-REACH·KOSHA 호출 예시와 CAS번호·최대함량 입력 방법 안내</span>
+              <span>- 엑셀 Power Query 연동 및 새로 고침 방법 안내</span>
+            </div>
+
           </div>
         </div>
       </div>
@@ -140,6 +172,24 @@
   </div>
 
 </div>
+  <!-- MSDS 업로드 정합성 검사 (브라우저 내 처리 — 파일 외부 전송 없음) -->
+  <div class="card">
+    <div class="card-head">📄 MSDS 업로드 정합성 검사</div>
+    <div class="card-body">
+      <label class="msds-drop" id="msdsDrop">
+        <input type="file" id="msdsFileInput" accept=".pdf,.jpg,.jpeg,.png,application/pdf,image/jpeg,image/png" multiple hidden>
+        <div class="msds-drop-title">PDF · JPG 파일을 끌어다 놓거나 클릭해서 선택</div>
+        <div class="msds-drop-sub">제출번호(AA…) · 개정일자 · 3번 구성성분 · 15번 법적규제를 확인합니다. 파일은 이 브라우저 안에서만 처리됩니다.</div>
+      </label>
+      <label class="msds-merge-opt">
+        <input type="checkbox" id="msdsMergeImages" checked>
+        이미지(JPG/PNG) 여러 장을 함께 선택하면 파일명 순서대로 한 MSDS의 페이지로 묶어 검사
+      </label>
+      <div class="msds-check-status" id="msdsCheckStatus"></div>
+    </div>
+  </div>
+  <div id="msdsCheckArea"></div>
+
   <!-- 입력 카드 -->
   <div class="card">
     <div class="card-head">
@@ -216,6 +266,10 @@
 <!-- LOC(Word) 확인서 자동 생성용 — 프론트엔드에서 docx 템플릿을 직접 치환 -->
 <script src="https://cdn.jsdelivr.net/npm/pizzip@3/dist/pizzip.min.js"></script>
 <script src="https://cdn.jsdelivr.net/npm/docxtemplater@3/build/docxtemplater.min.js"></script>
+<!-- MSDS 업로드 정합성 검사 — pdf.js·Tesseract는 /vendor에 자체 호스팅 -->
+<script src="vendor/tesseract/tesseract.min.js"></script>
+<script src="msds-check.js"></script>
 <script src="app.js"></script>
+<script src="msds-check-ui.js"></script>
 </body>
 </html>
