@@ -761,6 +761,39 @@ code {
   font-size: 12px;
 }
 
+.api-help-box {
+  width: min(420px, calc(100vw - 48px));
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.api-help-box .hero-help-body {
+  font-size: 14px;
+}
+
+.api-help-box p {
+  margin: 0 0 8px;
+}
+
+.api-help-example {
+  display: block;
+  padding: 6px 8px;
+  margin: 4px 0 8px;
+  background: #f1f5f9;
+  border-radius: 4px;
+  user-select: all;
+}
+
+/* Keep the tooltip open while the pointer crosses the gap below its button. */
+.api-help-box::before {
+  content: "";
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  right: 0;
+  height: 8px;
+}
+
 .hero-help-card:hover .hero-help-box,
 .hero-help-card:focus-within .hero-help-box {
   opacity: 1;
